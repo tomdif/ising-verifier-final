@@ -1,6 +1,4 @@
-use ff::PrimeField;
 use halo2_proofs::{
-    arithmetic::FieldExt,
     circuit::{AssignedCell, Layouter, SimpleFloorPlanner, Value},
     plonk::*,
     poly::Rotation,
@@ -32,10 +30,6 @@ pub struct IsingConfig {
     // Instance columns (public inputs)
     threshold:   Column<Instance>, // T + BIAS
     cipher_root: Column<Instance>,
-
-    // Lookup table for spins: (index, spin)
-    table_idx:  TableColumn,
-    table_spin: TableColumn,
 
     // Gadgets
     lt_config: LessThanConfig,
@@ -89,15 +83,12 @@ impl Circuit<F> for IsingCircuit {
         meta.enable_equality(cipher_root);
         meta.enable_equality(energy);
 
-        // Lookup table columns for spin (idx, val)
-        let table_idx  = meta.lookup_table_column();
-        let table_spin = meta.lookup_table_column();
-
         // 1. Enforce spins are binary: s ∈ {0,1}
         meta.create_gate("spin ∈ {0,1}", |vc| {
             let q = vc.query_selector(q_spin);
             let s = vc.query_advice(spin_val, Rotation::cur());
-            Constraints::with_selector(q, vec![s.clone() * (s - F::one())])
+            let one = Expression::Constant(F::one());
+            Constraints::with_selector(q, vec![s.clone() * (s - one)])
         });
 
         // 2. Ising interaction + energy accumulator
@@ -110,32 +101,19 @@ impl Circuit<F> for IsingCircuit {
             let e_prev = vc.query_advice(energy,Rotation::prev());
             let e_cur  = vc.query_advice(energy,Rotation::cur());
 
-            let four = F::from(4);
-            let two  = F::from(2);
+            let four = Expression::Constant(F::from(4u64));
+            let two  = Expression::Constant(F::from(2u64));
+            let one  = Expression::Constant(F::one());
+
             let expr = four * su_v.clone() * sv_v.clone()
-                     - two * su_v.clone()
-                     - two * sv_v.clone()
-                     + F::one();
+                     - two.clone()  * su_v.clone()
+                     - two          * sv_v.clone()
+                     + one;
 
             let term_calc   = term_v.clone() - (w_v * expr);
             let energy_calc = e_cur - (e_prev + term_v);
 
             Constraints::with_selector(q, vec![term_calc, energy_calc])
-        });
-
-        // 3. Lookups: (edge_u, su) and (edge_v, sv) must be in spin table
-        meta.lookup("spin lookup u", |meta| {
-            let q   = meta.query_selector(q_edge);
-            let idx = meta.query_advice(edge_u, Rotation::cur());
-            let sp  = meta.query_advice(su,     Rotation::cur());
-            vec![(q.clone() * idx, table_idx), (q * sp, table_spin)]
-        });
-
-        meta.lookup("spin lookup v", |meta| {
-            let q   = meta.query_selector(q_edge);
-            let idx = meta.query_advice(edge_v, Rotation::cur());
-            let sp  = meta.query_advice(sv,     Rotation::cur());
-            vec![(q.clone() * idx, table_idx), (q * sp, table_spin)]
         });
 
         let lt_config = LessThanChip::configure(meta);
@@ -154,8 +132,6 @@ impl Circuit<F> for IsingCircuit {
             q_edge,
             threshold,
             cipher_root,
-            table_idx,
-            table_spin,
             lt_config,
         }
     }
@@ -165,9 +141,6 @@ impl Circuit<F> for IsingCircuit {
         config: Self::Config,
         mut layouter: impl Layouter<F>,
     ) -> Result<(), Error> {
-        // 0. Load spin table (with dummy row)
-        self.load_spin_table(&config, &mut layouter)?;
-
         // 1. Layout spins + edges + energy
         let (spin_cells, final_energy) =
             self.layout_spins_and_edges(&config, layouter.namespace(|| "ising"))?;
@@ -175,7 +148,7 @@ impl Circuit<F> for IsingCircuit {
         // 2. Enforce gap-hiding: E + Δ ≤ T (via BIAS-shifted comparator)
         self.check_gap_hiding(&config, layouter.namespace(|| "gap-hiding"), final_energy)?;
 
-        // 3. Dummy cipher root: just return pubkey as “root” for now
+        // 3. Dummy cipher root: just return pubkey as “cipher root”
         let cipher_root =
             self.encrypt_spins(&config, layouter.namespace(|| "encryption"), &spin_cells)?;
 
@@ -185,48 +158,6 @@ impl Circuit<F> for IsingCircuit {
 }
 
 impl IsingCircuit {
-    fn load_spin_table(
-        &self,
-        config: &IsingConfig,
-        layouter: &mut impl Layouter<F>,
-    ) -> Result<(), Error> {
-        layouter.assign_table(
-            || "spin table",
-            |mut table| {
-                // Dummy (0,0) row for q=0 lookups
-                table.assign_cell(
-                    || "idx_dummy",
-                    config.table_idx,
-                    0,
-                    || Value::known(F::zero()),
-                )?;
-                table.assign_cell(
-                    || "spin_dummy",
-                    config.table_spin,
-                    0,
-                    || Value::known(F::zero()),
-                )?;
-
-                for (i, &s) in self.spins.iter().enumerate() {
-                    let row = i + 1;
-                    table.assign_cell(
-                        || "idx",
-                        config.table_idx,
-                        row,
-                        || Value::known(F::from(i as u64)),
-                    )?;
-                    table.assign_cell(
-                        || "spin",
-                        config.table_spin,
-                        row,
-                        || Value::known(F::from(s as u64)),
-                    )?;
-                }
-                Ok(())
-            },
-        )
-    }
-
     fn layout_spins_and_edges(
         &self,
         config: &IsingConfig,
@@ -297,23 +228,23 @@ impl IsingCircuit {
                         || Value::known(w),
                     )?;
 
-                    // Copy spins into su/sv
-                    let _su_cell = spin_cells[u as usize].copy_advice(
+                    // Assign su/sv directly from witness (no equality / copy)
+                    let su_val = F::from(self.spins[u as usize] as u64);
+                    let sv_val = F::from(self.spins[v as usize] as u64);
+                    region.assign_advice(
                         || "su",
-                        &mut region,
                         config.su,
                         row,
+                        || Value::known(su_val),
                     )?;
-                    let _sv_cell = spin_cells[v as usize].copy_advice(
+                    region.assign_advice(
                         || "sv",
-                        &mut region,
                         config.sv,
                         row,
+                        || Value::known(sv_val),
                     )?;
 
                     // Compute term and new energy as witness
-                    let su_val = F::from(self.spins[u as usize] as u64);
-                    let sv_val = F::from(self.spins[v as usize] as u64);
                     let expr = F::from(4) * su_val * sv_val
                              - F::from(2) * su_val
                              - F::from(2) * sv_val
@@ -380,7 +311,7 @@ impl IsingCircuit {
         mut layouter: impl Layouter<F>,
         _spin_cells: &[AssignedCell<F, F>],
     ) -> Result<AssignedCell<F, F>, Error> {
-        // For now, just return pubkey as “cipher root”
+        // For now, just return pubkey as “cipher root”.
         layouter.assign_region(
             || "cipher root",
             |mut region| {
