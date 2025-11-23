@@ -5,7 +5,7 @@ use halo2_proofs::{
 };
 use pasta_curves::pallas::Base as F;
 
-mod chips;
+pub mod chips;
 use chips::{LessThanChip, LessThanConfig};
 
 const BIAS: u64 = 1 << 50; // shift energies into positive range for unsigned comparison
