@@ -7,8 +7,8 @@ edition = "2021"
 halo2_proofs = { version = "0.3", features = ["dev-graph"] }
 pasta_curves = "0.5"
 ff = "0.13"
-poseidon-halo2 = "0.2"
 rand_core = "0.6"
 
 [dev-dependencies]
-proptest = "1.0"
+criterion = "0.5"
+proptest = "1.4"
