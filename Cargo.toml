@@ -1,0 +1,14 @@
+[package]
+name = "ising-verifier-final"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+halo2_proofs = { version = "0.3", features = ["dev-graph"] }
+pasta_curves = "0.5"
+ff = "0.13"
+poseidon-halo2 = "0.2"
+rand_core = "0.6"
+
+[dev-dependencies]
+proptest = "1.0"
