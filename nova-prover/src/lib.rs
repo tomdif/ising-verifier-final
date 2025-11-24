@@ -319,6 +319,11 @@ pub struct HardenedIsingCircuit<F: PrimeField> {
     pub problem_commitment: F,
     pub spin_commitment: F,
     pub step_index: usize,
+    
+    // Threshold verification (gap-hiding)
+    pub threshold: F,      // Public threshold T
+    pub gap: F,            // Secret gap Δ (for gap-hiding: prove E + Δ ≤ T)
+    pub is_final_step: bool,  // Only verify threshold on final step
 }
 
 impl<F: PrimeField> Default for HardenedIsingCircuit<F> {
@@ -329,6 +334,9 @@ impl<F: PrimeField> Default for HardenedIsingCircuit<F> {
             problem_commitment: F::ZERO,
             spin_commitment: F::ZERO,
             step_index: 0,
+            threshold: F::ZERO,
+            gap: F::ZERO,
+            is_final_step: false,
         }
     }
 }
@@ -340,6 +348,9 @@ impl<F: PrimeField> HardenedIsingCircuit<F> {
         problem_commitment: F1,
         spin_commitment: F1,
         step_index: usize,
+        threshold: i64,
+        gap: i64,
+        is_final_step: bool,
     ) -> Self {
         Self {
             batch_energy: Self::i64_to_f(batch_energy),
@@ -347,6 +358,9 @@ impl<F: PrimeField> HardenedIsingCircuit<F> {
             problem_commitment: Self::f1_to_f(problem_commitment),
             spin_commitment: Self::f1_to_f(spin_commitment),
             step_index,
+            threshold: Self::i64_to_f(threshold),
+            gap: Self::i64_to_f(gap),
+            is_final_step,
         }
     }
     
@@ -366,7 +380,7 @@ impl<F: PrimeField> HardenedIsingCircuit<F> {
 }
 
 impl<F: PrimeField> StepCircuit<F> for HardenedIsingCircuit<F> {
-    fn arity(&self) -> usize { 3 }  // [running_energy, problem_commitment, spin_commitment]
+    fn arity(&self) -> usize { 5 }  // [running_energy, problem_commitment, spin_commitment, threshold, verified]
 
     fn synthesize<CS: ConstraintSystem<F>>(
         &self,
@@ -380,6 +394,8 @@ impl<F: PrimeField> StepCircuit<F> for HardenedIsingCircuit<F> {
         let running_energy = &z[0];
         let problem_comm = &z[1];
         let spin_comm = &z[2];
+        let threshold_in = &z[3];
+        let verified_in = &z[4];
         
         //----------------------------------------------------------------------
         // 1. ENERGY ACCUMULATION (as before)
@@ -485,8 +501,83 @@ impl<F: PrimeField> StepCircuit<F> for HardenedIsingCircuit<F> {
             // - External hash verification (edge hashes verified outside)
         }
         
-        // Pass through commitments unchanged
-        Ok(vec![new_energy, problem_comm.clone(), spin_comm.clone()])
+        // Pass through commitments and threshold unchanged
+        let threshold_out = threshold_in.clone();
+        
+        //----------------------------------------------------------------------
+        // 4. THRESHOLD VERIFICATION (only on final step, gap-hiding)
+        //----------------------------------------------------------------------
+        // On final step: verify (energy + gap) <= threshold
+        // This enables gap-hiding: prover proves E + Δ ≤ T without revealing E
+        
+        // UNIFORM CONSTRAINTS: All steps must have same constraint structure
+        // We always compute the threshold check, but only use it on final step
+        use crate::comparators::le64;
+        
+        // Allocate gap (same on all steps for uniform constraints)
+        let gap = AllocatedNum::alloc(cs.namespace(|| "gap"), || {
+            Ok(self.gap)
+        })?;
+        
+        // Compute energy_plus_gap = new_energy + gap
+        let energy_plus_gap = AllocatedNum::alloc(cs.namespace(|| "energy_plus_gap"), || {
+            match (new_energy.get_value(), gap.get_value()) {
+                (Some(e), Some(g)) => Ok(e + g),
+                _ => Err(SynthesisError::AssignmentMissing),
+            }
+        })?;
+        
+        cs.enforce(
+            || "energy_plus_gap_sum",
+            |lc| lc + energy_plus_gap.get_variable(),
+            |lc| lc + CS::one(),
+            |lc| lc + new_energy.get_variable() + gap.get_variable(),
+        );
+        
+        // Verify energy_plus_gap <= threshold using Lt64
+        let threshold_check = le64(
+            &mut cs.namespace(|| "threshold_check"),
+            &energy_plus_gap,
+            &threshold_out,
+        )?;
+        
+        // On final step: verified_out = threshold_check
+        // On other steps: pass through (verified_in should be 0)
+        // Use selection: verified_out = is_final * threshold_check + (1 - is_final) * verified_in
+        let is_final = AllocatedNum::alloc(cs.namespace(|| "is_final"), || {
+            Ok(if self.is_final_step { F::ONE } else { F::ZERO })
+        })?;
+        
+        // Enforce is_final is boolean
+        cs.enforce(
+            || "is_final_binary",
+            |lc| lc + is_final.get_variable(),
+            |lc| lc + is_final.get_variable() - CS::one(),
+            |lc| lc,
+        );
+        
+        // verified_out = is_final * threshold_check + (1 - is_final) * verified_in
+        let verified_out = AllocatedNum::alloc(cs.namespace(|| "verified_out"), || {
+            match (is_final.get_value(), threshold_check.get_value(), verified_in.get_value()) {
+                (Some(f), Some(tc), Some(vi)) => {
+                    Ok(f * tc + (F::ONE - f) * vi)
+                }
+                _ => Err(SynthesisError::AssignmentMissing),
+            }
+        })?;
+        
+        // Enforce selection constraint
+        // verified_out = is_final * threshold_check + (1 - is_final) * verified_in
+        // verified_out = is_final * threshold_check + verified_in - is_final * verified_in
+        // verified_out - verified_in = is_final * (threshold_check - verified_in)
+        cs.enforce(
+            || "verified_selection",
+            |lc| lc + is_final.get_variable(),
+            |lc| lc + threshold_check.get_variable() - verified_in.get_variable(),
+            |lc| lc + verified_out.get_variable() - verified_in.get_variable(),
+        );
+        
+        Ok(vec![new_energy, problem_comm.clone(), spin_comm.clone(), threshold_out, verified_out])
     }
 }
 
@@ -566,10 +657,12 @@ pub struct HardenedIsingProver {
     pub problem_commitment: F1,
     pub spin_commitment: F1,
     pub edge_hashes: Vec<F1>,
+    pub threshold: i64,  // Public threshold T
+    pub gap: i64,        // Secret gap Δ for gap-hiding
 }
 
 impl HardenedIsingProver {
-    pub fn new(edges: Vec<(u32, u32, i64)>, spins: Vec<u8>) -> Self {
+    pub fn new(edges: Vec<(u32, u32, i64)>, spins: Vec<u8>, threshold: i64, gap: i64) -> Self {
         let n_spins = spins.len();
         
         println!("  [COMMIT] Computing problem commitment...");
@@ -585,9 +678,16 @@ impl HardenedIsingProver {
             problem_commitment,
             spin_commitment,
             edge_hashes,
+            threshold,
+            gap,
         }
     }
     
+    /// Create prover without threshold verification
+    pub fn new_without_threshold(edges: Vec<(u32, u32, i64)>, spins: Vec<u8>) -> Self {
+        Self::new(edges, spins, i64::MAX / 2, 0)
+    }
+
     pub fn num_steps(&self) -> usize {
         ((self.edges.len() + EDGES_PER_STEP - 1) / EDGES_PER_STEP).max(1)
     }
@@ -599,10 +699,12 @@ impl HardenedIsingProver {
         }
         
         let chunks: Vec<_> = self.edges.chunks(EDGES_PER_STEP).collect();
+        let num_steps = chunks.len();
         
         chunks.iter().enumerate().map(|(step_idx, chunk)| {
             // Compute batch energy
             let batch_energy = compute_ising_energy(chunk, &self.spins);
+            let is_final_step = step_idx == num_steps - 1;
             
             // Derive challenge indices for spot-checks
             let challenge_indices = derive_challenge_indices(
@@ -633,6 +735,9 @@ impl HardenedIsingProver {
                 self.problem_commitment,
                 self.spin_commitment,
                 step_idx,
+                self.threshold + (BIAS as i64),  // Biased threshold
+                self.gap,
+                is_final_step,
             )
         }).collect()
     }
@@ -655,10 +760,14 @@ impl HardenedIsingProver {
     
     /// Initial state for Nova folding: [biased_energy, problem_comm, spin_comm]
     pub fn initial_state(&self) -> Vec<F1> {
+        // Biased threshold: threshold + BIAS (same as energy bias)
+        let biased_threshold = (self.threshold + (BIAS as i64)) as u64;
         vec![
-            F1::from(BIAS),
-            self.problem_commitment,
-            self.spin_commitment,
+            F1::from(BIAS),                    // running_energy (biased)
+            self.problem_commitment,           // problem_commitment
+            self.spin_commitment,              // spin_commitment
+            F1::from(biased_threshold),        // threshold (biased)
+            F1::ZERO,                          // verified flag (starts at 0, becomes 1 on final step)
         ]
     }
 }
@@ -714,11 +823,16 @@ pub struct IsingNovaProver {
 }
 
 impl IsingNovaProver {
-    pub fn new(edges: Vec<(u32, u32, i64)>, spins: Vec<u8>) -> Self {
+    pub fn new(edges: Vec<(u32, u32, i64)>, spins: Vec<u8>, threshold: i64, gap: i64) -> Self {
         let n_spins = spins.len();
         Self { edges, spins, n_spins }
     }
     
+    /// Create prover without threshold verification
+    pub fn new_without_threshold(edges: Vec<(u32, u32, i64)>, spins: Vec<u8>) -> Self {
+        Self::new(edges, spins, i64::MAX / 2, 0)
+    }
+
     pub fn num_steps(&self) -> usize {
         ((self.edges.len() + EDGES_PER_STEP - 1) / EDGES_PER_STEP).max(1)
     }

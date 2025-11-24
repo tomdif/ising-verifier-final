@@ -53,7 +53,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
     
     // Use 10x scale for faster testing of new circuit
-    let scale = 100;
+    let scale = 10;
     let n_spins = 131_072 * scale;
     let degree = 12;
     
@@ -68,10 +68,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (edges, spins) = generate_test_problem(n_spins, degree);
     println!("{:?} ({:.1}M edges)", t.elapsed(), edges.len() as f64 / 1e6);
     
+    // Compute energy first to set threshold
+    let energy = ising_nova::compute_ising_energy_parallel(&edges, &spins);
+    
+    // Set threshold = energy + 1000 (some slack), gap = 0 (no gap-hiding)
+    let threshold = energy + 1000;
+    let gap = 0i64;
+    
     // Step 2: Create hardened prover (computes commitments)
     println!("  [2/7] Creating hardened prover with commitments...");
+    println!("         Energy: {}, Threshold: {}, Gap: {}", energy, threshold, gap);
     let t = Instant::now();
-    let prover = HardenedIsingProver::new(edges, spins);
+    let prover = HardenedIsingProver::new(edges, spins, threshold, gap);
     let commitment_time = t.elapsed();
     println!("         Commitment time: {:?}", commitment_time);
     
@@ -87,7 +95,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
              total_spot_checks, SPOT_CHECKS_PER_STEP);
     
     // Step 4: Nova setup
-    print!("  [4/7] Nova setup (arity=3)... ");
+    print!("  [4/7] Nova setup (arity=5)... ");
     std::io::Write::flush(&mut std::io::stdout())?;
     let t = Instant::now();
     let pp = PublicParams::<E1, E2, C1, C2>::setup(
