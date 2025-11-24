@@ -384,14 +384,13 @@ dependencies = [
 
 [[package]]
 name = "ising-nova"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bellpepper",
  "bellpepper-core",
  "bincode",
  "ff",
  "nova-snark",
- "rand",
  "rayon",
  "serde",
 ]
