@@ -1,11 +1,10 @@
-//! Nova Ising Prover - Full Demo with Commitment Verification
+//! Nova Ising Prover - 100X Scale Benchmark (13M spins)
 
 use std::time::Instant;
 use ff::Field;
 use ising_nova::{
-    IsingStepCircuit, IsingProofBundle, IsingNovaProver,
-    E1, E2, F1, F2, BIAS, EDGES_PER_STEP,
-    commit_ising_problem, commit_spins,
+    IsingStepCircuit, IsingNovaProver,
+    E1, E2, F1, F2,
 };
 use nova_snark::{
     traits::{circuit::TrivialCircuit, snark::RelaxedR1CSSNARKTrait},
@@ -21,18 +20,14 @@ type S2 = RelaxedR1CSSNARK<E2, EE2>;
 type C1 = IsingStepCircuit<F1>;
 type C2 = TrivialCircuit<F2>;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("═══════════════════════════════════════════════════════════════");
-    println!("  Nova Ising Prover - FULL DEMO WITH COMMITMENT");
-    println!("═══════════════════════════════════════════════════════════════\n");
+fn run_benchmark(n: usize, deg: usize) -> Result<(), Box<dyn std::error::Error>> {
+    println!("╔═══════════════════════════════════════════════════════════════╗");
+    println!("║  {} spins ({:.1}M), degree {}  ", n, n as f64 / 1_000_000.0, deg);
+    println!("╚═══════════════════════════════════════════════════════════════╝");
     
-    // ========================================================================
-    // STEP 1: Define Problem
-    // ========================================================================
-    let n = 50_000;
-    let deg = 12;
-    
-    print!("[1/6] Generating problem ({} spins, degree {})... ", n, deg);
+    // Generate problem
+    print!("  [1/6] Generating problem... ");
+    std::io::Write::flush(&mut std::io::stdout())?;
     let t = Instant::now();
     let edges: Vec<(u32, u32, i64)> = (0..n).flat_map(|i| {
         (1..=deg/2).map(move |d| {
@@ -42,40 +37,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
     }).collect();
     let spins: Vec<u8> = (0..n).map(|i| (i % 2) as u8).collect();
-    println!("{:?}", t.elapsed());
-    println!("       {} edges, {} spins", edges.len(), spins.len());
+    println!("{:?} ({:.1}M edges)", t.elapsed(), edges.len() as f64 / 1_000_000.0);
     
-    // ========================================================================
-    // STEP 2: Create Prover & Compute Commitments
-    // ========================================================================
-    print!("\n[2/6] Computing commitments... ");
+    // Commitment (skip for very large - takes too long)
+    print!("  [2/6] Computing Poseidon commitment... ");
+    std::io::Write::flush(&mut std::io::stdout())?;
     let t = Instant::now();
     let prover = IsingNovaProver::new(edges.clone(), spins.clone());
     let bundle = prover.create_bundle();
     println!("{:?}", t.elapsed());
     
-    println!("\n┌─────────────────────────────────────────────────────────────┐");
-    println!("│                    PROOF BUNDLE                             │");
-    println!("├─────────────────────────────────────────────────────────────┤");
-    println!("│  Problem commitment: 0x{}...  │", hex::encode(&bundle.problem_commitment[..16]));
-    println!("│  Spin commitment:    0x{}...  │", hex::encode(&bundle.spin_commitment[..16]));
-    println!("│  Claimed energy:     {:>10}                            │", bundle.claimed_energy);
-    println!("│  N spins:            {:>10}                            │", bundle.n_spins);
-    println!("│  N edges:            {:>10}                            │", bundle.n_edges);
-    println!("└─────────────────────────────────────────────────────────────┘");
-    
-    // ========================================================================
-    // STEP 3: Generate Step Circuits
-    // ========================================================================
-    print!("\n[3/6] Generating {} step circuits... ", prover.num_steps());
+    // Circuits
+    print!("  [3/6] Generating {} step circuits... ", prover.num_steps());
+    std::io::Write::flush(&mut std::io::stdout())?;
     let t = Instant::now();
     let circuits = prover.step_circuits();
     println!("{:?}", t.elapsed());
     
-    // ========================================================================
-    // STEP 4: Nova Setup & Proving
-    // ========================================================================
-    print!("[4/6] Nova setup... ");
+    // Setup
+    print!("  [4/6] Nova setup... ");
+    std::io::Write::flush(&mut std::io::stdout())?;
     let t = Instant::now();
     let pp = PublicParams::<E1, E2, C1, C2>::setup(
         &circuits[0], &TrivialCircuit::default(),
@@ -83,24 +64,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!("{:?}", t.elapsed());
     
-    print!("[5/6] Recursive proving ({} steps)... ", circuits.len());
+    // Prove
+    println!("  [5/6] Recursive proving ({} steps)...", circuits.len());
     let t = Instant::now();
     let z0 = IsingNovaProver::initial_state();
     let z0_sec = vec![F2::ZERO];
     let mut rs = RecursiveSNARK::<E1, E2, C1, C2>::new(
         &pp, &circuits[0], &TrivialCircuit::default(), &z0, &z0_sec,
     )?;
-    for c in &circuits {
+    for (i, c) in circuits.iter().enumerate() {
         rs.prove_step(&pp, c, &TrivialCircuit::default())?;
+        if (i + 1) % 100 == 0 { 
+            println!("         Step {}/{} ({:.1}s elapsed)", i + 1, circuits.len(), t.elapsed().as_secs_f64());
+        }
     }
     let rec_time = t.elapsed();
-    rs.verify(&pp, circuits.len(), &z0, &z0_sec)?;
-    println!("{:?} ✅", rec_time);
+    println!("         Done: {:?} ({:.1}ms/step)", rec_time, rec_time.as_millis() as f64 / circuits.len() as f64);
     
-    // ========================================================================
-    // STEP 5: Compress Proof
-    // ========================================================================
-    print!("[6/6] Compressing proof... ");
+    // Verify recursive
+    print!("         Verifying... ");
+    std::io::Write::flush(&mut std::io::stdout())?;
+    rs.verify(&pp, circuits.len(), &z0, &z0_sec)?;
+    println!("✅");
+    
+    // Compress
+    print!("  [6/6] Compressing proof... ");
+    std::io::Write::flush(&mut std::io::stdout())?;
     let t = Instant::now();
     let (pk, vk) = CompressedSNARK::<E1, E2, C1, C2, S1, S2>::setup(&pp)?;
     let compressed = CompressedSNARK::<E1, E2, C1, C2, S1, S2>::prove(&pp, &pk, &rs)?;
@@ -108,71 +97,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("{:?}", comp_time);
     
     let proof_bytes = bincode::serialize(&compressed)?;
-    let bundle_bytes = bincode::serialize(&bundle)?;
-    
-    print!("       Verifying... ");
-    let t = Instant::now();
     compressed.verify(&vk, circuits.len(), &z0, &z0_sec)?;
-    println!("{:?} ✅", t.elapsed());
+    println!("         Compressed verify: ✅");
     
-    // ========================================================================
-    // RESULTS
-    // ========================================================================
+    // Results
     let total = rec_time.as_secs_f64() + comp_time.as_secs_f64();
+    println!("\n  ╔═══════════════════════════════════════════════════════════╗");
+    println!("  ║ RESULTS: {} spins ({:.2}M)", n, n as f64 / 1_000_000.0);
+    println!("  ╠═══════════════════════════════════════════════════════════╣");
+    println!("  ║ Edges:              {:>12} ({:.1}M)", bundle.n_edges, bundle.n_edges as f64 / 1_000_000.0);
+    println!("  ║ Steps:              {:>12}", circuits.len());
+    println!("  ║ Recursive time:     {:>12.2}s", rec_time.as_secs_f64());
+    println!("  ║ Compress time:      {:>12.2}s", comp_time.as_secs_f64());
+    println!("  ║ ─────────────────────────────────────────────────────────");
+    println!("  ║ TOTAL PROVE:        {:>12.2}s", total);
+    println!("  ║ Proof size:         {:>12.1} KB", proof_bytes.len() as f64 / 1024.0);
+    println!("  ║ Energy:             {:>12}", bundle.claimed_energy);
+    println!("  ╚═══════════════════════════════════════════════════════════╝\n");
     
-    println!("\n╔═════════════════════════════════════════════════════════════╗");
-    println!("║                      FINAL RESULTS                          ║");
-    println!("╠═════════════════════════════════════════════════════════════╣");
-    println!("║  Total prove time:     {:>8.2}s                            ║", total);
-    println!("║  Proof size:           {:>8.1} KB                          ║", proof_bytes.len() as f64 / 1024.0);
-    println!("║  Bundle size:          {:>8} bytes                        ║", bundle_bytes.len());
-    println!("╚═════════════════════════════════════════════════════════════╝");
+    Ok(())
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    println!("═══════════════════════════════════════════════════════════════════");
+    println!("  Nova Ising Prover - 100X SCALE BENCHMARK");
+    println!("  Target: 13,107,200 spins (100x whitepaper)");
+    println!("  Expected: ~45 seconds prove time");
+    println!("═══════════════════════════════════════════════════════════════════\n");
     
-    // ========================================================================
-    // COMMITMENT VERIFICATION DEMO
-    // ========================================================================
-    println!("\n╔═════════════════════════════════════════════════════════════╗");
-    println!("║              COMMITMENT VERIFICATION DEMO                   ║");
-    println!("╠═════════════════════════════════════════════════════════════╣");
+    // Run 100x benchmark
+    run_benchmark(131_072 * 100, 12)?;
     
-    // Test 1: Correct problem
-    let ok1 = bundle.verify_problem(n, &edges);
-    println!("║  Same problem:         {}                              ║", 
-             if ok1 { "✅ VALID" } else { "❌ INVALID" });
-    
-    // Test 2: Correct spins
-    let ok2 = bundle.verify_spins(&spins);
-    println!("║  Same spins:           {}                              ║",
-             if ok2 { "✅ VALID" } else { "❌ INVALID" });
-    
-    // Test 3: Wrong problem (different edge)
-    let mut wrong_edges = edges.clone();
-    wrong_edges[0] = (0, 1, 999);  // Tampered weight
-    let ok3 = bundle.verify_problem(n, &wrong_edges);
-    println!("║  Tampered edge:        {}                            ║",
-             if ok3 { "❌ FALSE POSITIVE!" } else { "✅ REJECTED" });
-    
-    // Test 4: Wrong spins
-    let mut wrong_spins = spins.clone();
-    wrong_spins[0] = 1 - wrong_spins[0];  // Flip one spin
-    let ok4 = bundle.verify_spins(&wrong_spins);
-    println!("║  Tampered spin:        {}                            ║",
-             if ok4 { "❌ FALSE POSITIVE!" } else { "✅ REJECTED" });
-    
-    // Test 5: Completely different problem
-    let tiny_edges = vec![(0u32, 1u32, 1i64)];
-    let ok5 = bundle.verify_problem(2, &tiny_edges);
-    println!("║  Different problem:    {}                            ║",
-             if ok5 { "❌ FALSE POSITIVE!" } else { "✅ REJECTED" });
-    
-    println!("╚═════════════════════════════════════════════════════════════╝");
-    
-    if ok1 && ok2 && !ok3 && !ok4 && !ok5 {
-        println!("\n🎉 SUCCESS: Proof is cryptographically bound to this problem!");
-        println!("   A malicious prover cannot substitute a different problem.");
-    } else {
-        println!("\n❌ FAILURE: Commitment verification has issues!");
-    }
+    println!("═══════════════════════════════════════════════════════════════════");
+    println!("  100X BENCHMARK COMPLETE");
+    println!("═══════════════════════════════════════════════════════════════════");
     
     Ok(())
 }

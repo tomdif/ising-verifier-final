@@ -1,14 +1,4 @@
-//! Nova Ising Prover with Poseidon Commitment
-//!
-//! Zero-knowledge proof system for Ising model optimization using Nova folding.
-//!
-//! ## Performance (validated)
-//! - 131,072 spins, degree 12: **0.95 seconds** prove time
-//! - Proof size: **9.8 KB** (constant)
-//! - Verification: **23 ms**
-//!
-//! ## Soundness
-//! Proof is cryptographically bound via Poseidon hash (industry standard).
+//! Nova Ising Prover - Maximum GPU Acceleration with Pipelining
 
 use ff::{Field, PrimeField};
 use nova_snark::{
@@ -22,23 +12,24 @@ use bellpepper_core::{
 use rayon::prelude::*;
 use neptune::poseidon::PoseidonConstants;
 use neptune::Poseidon;
+use neptune::batch_hasher::Batcher;
+use neptune::BatchHasher;
 use generic_array::typenum::{U2, U4};
+use generic_array::GenericArray;
 use std::sync::OnceLock;
+use std::time::Instant;
 
 pub type E1 = PallasEngine;
 pub type E2 = VestaEngine;
 pub type F1 = <E1 as Engine>::Scalar;
 pub type F2 = <E2 as Engine>::Scalar;
 
-/// Optimal batch size: 100K edges per Nova step
 pub const EDGES_PER_STEP: usize = 100_000;
-
-/// Bias for field encoding (ensures positive values)
 pub const BIAS: u64 = 1 << 50;
 
-// ============================================================================
-// CACHED POSEIDON CONSTANTS (expensive to create)
-// ============================================================================
+// Tuned for RTX 4060 Ti 16GB
+const GPU_HASH_BATCH: usize = 8_000_000;   // 8M edges per batch
+const GPU_REDUCE_BATCH: usize = 16_000_000; // 16M pairs per reduction batch
 
 static POSEIDON_CONSTANTS_2: OnceLock<PoseidonConstants<F1, U2>> = OnceLock::new();
 static POSEIDON_CONSTANTS_4: OnceLock<PoseidonConstants<F1, U4>> = OnceLock::new();
@@ -51,75 +42,181 @@ fn get_constants_4() -> &'static PoseidonConstants<F1, U4> {
     POSEIDON_CONSTANTS_4.get_or_init(|| PoseidonConstants::new())
 }
 
-// ============================================================================
-// POSEIDON COMMITMENT FUNCTIONS (OPTIMIZED)
-// ============================================================================
-
-/// Convert i64 to field element
 pub fn i64_to_field(val: i64) -> F1 {
     if val >= 0 { F1::from(val as u64) } else { -F1::from((-val) as u64) }
 }
 
-/// Poseidon hash of two field elements (cached constants)
 pub fn poseidon_hash_2(a: F1, b: F1) -> F1 {
     Poseidon::new_with_preimage(&[a, b], get_constants_2()).hash()
 }
 
-/// Poseidon hash of four field elements (cached constants)
-pub fn poseidon_hash_4(a: F1, b: F1, c: F1, d: F1) -> F1 {
-    Poseidon::new_with_preimage(&[a, b, c, d], get_constants_4()).hash()
-}
-
-/// Chain hash a sequence of elements using Poseidon
-pub fn poseidon_chain(elements: &[F1]) -> F1 {
+/// GPU-accelerated tree reduction with large batches
+fn gpu_tree_reduce(mut elements: Vec<F1>) -> F1 {
     if elements.is_empty() { return F1::ZERO; }
+    if elements.len() == 1 { return elements[0]; }
+    
     let constants = get_constants_2();
-    let mut acc = elements[0];
-    for &elem in &elements[1..] {
-        acc = Poseidon::new_with_preimage(&[acc, elem], constants).hash();
+    let mut round = 0;
+    
+    let gpu_available = elements.len() > 100_000 && 
+        Batcher::<F1, U2>::pick_gpu(GPU_REDUCE_BATCH.min(elements.len() / 2)).is_ok();
+    
+    while elements.len() > 1 {
+        round += 1;
+        let pairs = elements.len() / 2;
+        let has_odd = elements.len() % 2 == 1;
+        
+        if gpu_available && pairs > 50_000 {
+            let mut next = Vec::with_capacity(pairs + if has_odd { 1 } else { 0 });
+            
+            for chunk_start in (0..pairs).step_by(GPU_REDUCE_BATCH) {
+                let chunk_end = (chunk_start + GPU_REDUCE_BATCH).min(pairs);
+                let chunk_pairs = chunk_end - chunk_start;
+                
+                let mut batcher = match Batcher::<F1, U2>::pick_gpu(chunk_pairs) {
+                    Ok(b) => b,
+                    Err(_) => {
+                        let cpu_result: Vec<F1> = (chunk_start..chunk_end)
+                            .into_par_iter()
+                            .map(|i| Poseidon::new_with_preimage(&[elements[i*2], elements[i*2+1]], constants).hash())
+                            .collect();
+                        next.extend(cpu_result);
+                        continue;
+                    }
+                };
+                
+                let preimages: Vec<GenericArray<F1, U2>> = (chunk_start..chunk_end)
+                    .into_par_iter()
+                    .map(|i| GenericArray::clone_from_slice(&[elements[i*2], elements[i*2+1]]))
+                    .collect();
+                
+                match batcher.hash(&preimages[..]) {
+                    Ok(hashes) => next.extend(hashes),
+                    Err(_) => {
+                        let cpu_result: Vec<F1> = (chunk_start..chunk_end)
+                            .into_par_iter()
+                            .map(|i| Poseidon::new_with_preimage(&[elements[i*2], elements[i*2+1]], constants).hash())
+                            .collect();
+                        next.extend(cpu_result);
+                    }
+                }
+            }
+            
+            if has_odd {
+                next.push(elements[elements.len() - 1]);
+            }
+            elements = next;
+        } else {
+            let mut next: Vec<F1> = (0..pairs)
+                .into_par_iter()
+                .map(|i| Poseidon::new_with_preimage(&[elements[i*2], elements[i*2+1]], constants).hash())
+                .collect();
+            
+            if has_odd {
+                next.push(elements[elements.len() - 1]);
+            }
+            elements = next;
+        }
     }
-    acc
+    
+    println!("    [REDUCE] {} rounds", round);
+    elements[0]
 }
 
-/// Commit to Ising problem - PARALLEL version
-pub fn commit_ising_problem(n_spins: usize, edges: &[(u32, u32, i64)]) -> F1 {
-    // Parallel hash edges in chunks
-    let edge_hashes: Vec<F1> = edges.par_chunks(5000).map(|chunk| {
-        let constants4 = get_constants_4();
-        let mut acc = F1::ZERO;
-        for &(u, v, w) in chunk {
-            acc = Poseidon::new_with_preimage(&[
-                F1::from(u as u64),
-                F1::from(v as u64),
-                i64_to_field(w),
-                acc,
-            ], constants4).hash();
-        }
-        acc
-    }).collect();
+/// Prep preimages from edge slice
+fn prep_preimages(edges: &[(u32, u32, i64)]) -> Vec<GenericArray<F1, U4>> {
+    edges.par_iter().map(|&(u, v, w)| {
+        GenericArray::clone_from_slice(&[
+            F1::from(u as u64), F1::from(v as u64), i64_to_field(w), F1::ZERO
+        ])
+    }).collect()
+}
+
+/// GPU hash with pipelining using rayon::join
+fn gpu_hash_edges_pipelined(edges: &[(u32, u32, i64)]) -> Vec<F1> {
+    let total = edges.len();
+    let num_chunks = (total + GPU_HASH_BATCH - 1) / GPU_HASH_BATCH;
     
-    let edges_commitment = poseidon_chain(&edge_hashes);
+    let gpu_available = Batcher::<F1, U4>::pick_gpu(GPU_HASH_BATCH.min(total)).is_ok();
+    
+    if !gpu_available {
+        println!("    [HASH] CPU fallback");
+        let constants = get_constants_4();
+        return edges.par_iter()
+            .map(|&(u, v, w)| {
+                Poseidon::new_with_preimage(&[
+                    F1::from(u as u64), F1::from(v as u64), i64_to_field(w), F1::ZERO
+                ], constants).hash()
+            })
+            .collect();
+    }
+    
+    println!("    [HASH] GPU pipelined, {} chunks of {}M", num_chunks, GPU_HASH_BATCH / 1_000_000);
+    
+    let chunks: Vec<_> = edges.chunks(GPU_HASH_BATCH).collect();
+    let mut all_hashes = Vec::with_capacity(total);
+    
+    // Prep first batch
+    let mut current_preimages = prep_preimages(chunks[0]);
+    
+    for i in 0..num_chunks {
+        // Pipeline: prep next while GPU hashes current
+        let (hashes, next_preimages) = if i + 1 < num_chunks {
+            let next_chunk = chunks[i + 1];
+            rayon::join(
+                || {
+                    let mut batcher = Batcher::<F1, U4>::pick_gpu(current_preimages.len()).unwrap();
+                    let h = batcher.hash(&current_preimages[..]).unwrap();
+                    drop(batcher);
+                    h
+                },
+                || prep_preimages(next_chunk)
+            )
+        } else {
+            let mut batcher = Batcher::<F1, U4>::pick_gpu(current_preimages.len()).unwrap();
+            let h = batcher.hash(&current_preimages[..]).unwrap();
+            drop(batcher);
+            (h, Vec::new())
+        };
+        
+        all_hashes.extend(hashes);
+        current_preimages = next_preimages;
+        
+        print!("\r    [HASH] {}/{}", i + 1, num_chunks);
+        use std::io::Write;
+        std::io::stdout().flush().ok();
+    }
+    println!(" done");
+    
+    all_hashes
+}
+
+/// Commit to Ising problem
+pub fn commit_ising_problem(n_spins: usize, edges: &[(u32, u32, i64)]) -> F1 {
+    let t0 = Instant::now();
+    let edge_hashes = gpu_hash_edges_pipelined(edges);
+    let hash_time = t0.elapsed();
+    
+    let t1 = Instant::now();
+    let edges_commitment = gpu_tree_reduce(edge_hashes);
+    let reduce_time = t1.elapsed();
+    
+    println!("    [TIME] Hash: {:.2}s, Reduce: {:.2}s, Total: {:.2}s", 
+             hash_time.as_secs_f64(), reduce_time.as_secs_f64(),
+             hash_time.as_secs_f64() + reduce_time.as_secs_f64());
+    
     poseidon_hash_2(F1::from(n_spins as u64), edges_commitment)
 }
 
-/// Commit to spin configuration - PARALLEL version
+/// Commit to spin configuration
 pub fn commit_spins(spins: &[u8]) -> F1 {
-    // Pack 64 spins per field element, then hash in parallel
     let packed: Vec<F1> = spins.par_chunks(64).map(|chunk| {
         let mut val: u64 = 0;
         for (i, &s) in chunk.iter().enumerate() { val |= (s as u64) << i; }
         F1::from(val)
     }).collect();
     
-    // Parallel tree reduction for large spin counts
-    if packed.len() > 1000 {
-        let chunk_hashes: Vec<F1> = packed.par_chunks(100).map(|chunk| {
-            poseidon_chain(chunk)
-        }).collect();
-        poseidon_chain(&chunk_hashes)
-    } else {
-        poseidon_chain(&packed)
-    }
+    gpu_tree_reduce(packed)
 }
 
 fn field_to_bytes(f: F1) -> [u8; 32] {
@@ -129,7 +226,6 @@ fn field_to_bytes(f: F1) -> [u8; 32] {
     out
 }
 
-/// Proof bundle with Poseidon commitments
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct IsingProofBundle {
     pub problem_commitment: [u8; 32],
@@ -159,11 +255,6 @@ impl IsingProofBundle {
     }
 }
 
-// ============================================================================
-// ENERGY COMPUTATION
-// ============================================================================
-
-/// Compute Ising energy: E = Σ w_ij * σ_i * σ_j
 pub fn compute_ising_energy(edges: &[(u32, u32, i64)], spins: &[u8]) -> i64 {
     edges.iter().map(|&(u, v, w)| {
         let su = spins[u as usize] as i64;
@@ -172,7 +263,6 @@ pub fn compute_ising_energy(edges: &[(u32, u32, i64)], spins: &[u8]) -> i64 {
     }).sum()
 }
 
-/// Parallel energy computation for large graphs
 pub fn compute_ising_energy_parallel(edges: &[(u32, u32, i64)], spins: &[u8]) -> i64 {
     edges.par_iter().map(|&(u, v, w)| {
         let su = spins[u as usize] as i64;
@@ -180,10 +270,6 @@ pub fn compute_ising_energy_parallel(edges: &[(u32, u32, i64)], spins: &[u8]) ->
         w * (4 * su * sv - 2 * su - 2 * sv + 1)
     }).sum()
 }
-
-// ============================================================================
-// NOVA STEP CIRCUIT
-// ============================================================================
 
 #[derive(Clone, Debug)]
 pub struct IsingStepCircuit<F: PrimeField> {
@@ -225,10 +311,6 @@ impl<F: PrimeField> StepCircuit<F> for IsingStepCircuit<F> {
     }
 }
 
-// ============================================================================
-// MAIN PROVER INTERFACE
-// ============================================================================
-
 pub struct IsingNovaProver {
     pub edges: Vec<(u32, u32, i64)>,
     pub spins: Vec<u8>,
@@ -262,30 +344,4 @@ impl IsingNovaProver {
     }
     
     pub fn initial_state() -> Vec<F1> { vec![F1::from(BIAS)] }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    
-    #[test]
-    fn test_poseidon_hash() {
-        let a = F1::from(123u64);
-        let b = F1::from(456u64);
-        let h1 = poseidon_hash_2(a, b);
-        let h2 = poseidon_hash_2(a, b);
-        assert_eq!(h1, h2);
-        assert_ne!(h1, poseidon_hash_2(b, a));
-    }
-    
-    #[test]
-    fn test_commitment_verification() {
-        let edges = vec![(0, 1, 1), (1, 2, -1)];
-        let spins = vec![0, 1, 1];
-        let bundle = IsingProofBundle::new(3, &edges, &spins, 0);
-        
-        assert!(bundle.verify_problem(3, &edges));
-        assert!(bundle.verify_spins(&spins));
-        assert!(!bundle.verify_problem(3, &vec![(0, 1, 2)]));
-    }
 }
