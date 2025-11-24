@@ -392,6 +392,7 @@ dependencies = [
  "ff",
  "nova-snark",
  "rand",
+ "rayon",
  "serde",
 ]
 

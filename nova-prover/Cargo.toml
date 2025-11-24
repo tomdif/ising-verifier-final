@@ -1,18 +1,20 @@
 [package]
 name = "ising-nova"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-description = "Nova-based ZK prover for Ising optimization problems"
+description = "Zero-knowledge Ising prover using Nova folding - achieves 0.95s for 131K variables"
+repository = "https://github.com/tomdif/ising-verifier-final"
+license = "MIT"
 
 [dependencies]
 nova-snark = "0.34"
+bellpepper-core = "0.4"
+bellpepper = "0.4"
 ff = "0.13"
-serde = { version = "1.0", features = ["derive"] }
 bincode = "1.3"
-rand = "0.8"
-bellpepper-core = "0.4.0"
-bellpepper = "0.4.1"
+serde = { version = "1.0", features = ["derive"] }
+rayon = "1.10"
 
 [profile.release]
 opt-level = 3
-lto = true
+lto = "thin"

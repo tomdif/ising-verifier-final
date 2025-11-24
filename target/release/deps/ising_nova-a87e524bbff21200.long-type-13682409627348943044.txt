@@ -1,0 +1,1 @@
+nova_snark::spartan::snark::RelaxedR1CSSNARK<PallasEngine, nova_snark::provider::ipa_pc::EvaluationEngine<PallasEngine>>

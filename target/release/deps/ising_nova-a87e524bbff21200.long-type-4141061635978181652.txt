@@ -1,0 +1,1 @@
+PublicParams<PallasEngine, VestaEngine, IsingStepCircuit<pasta_curves::fields::fq::Fq>, TrivialCircuit<pasta_curves::fields::fp::Fp>>
