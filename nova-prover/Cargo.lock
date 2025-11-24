@@ -390,6 +390,7 @@ dependencies = [
  "bellpepper-core",
  "bincode",
  "ff",
+ "hex",
  "nova-snark",
  "rayon",
  "serde",
