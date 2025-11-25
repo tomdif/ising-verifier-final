@@ -109,3 +109,28 @@ cast send $ISING_JOB_MANAGER_ADDRESS \
 - **Chain ID**: 11155111
 - **Explorer**: https://sepolia.etherscan.io/
 - **Faucets**: See prerequisites above
+
+## Deployment Status
+
+**Contracts Ready** ✅
+- All tests passing (33/33)
+- Deployment script tested
+- Estimated gas: ~0.003 ETH
+
+**Pending:**
+- Testnet ETH for deployment
+
+**Your Deployer Address:**
+```
+0xC625656b370eEF2C5870ddb910FeF21aBE94B207
+```
+
+Get Sepolia ETH from:
+- https://sepoliafaucet.com/
+- https://cloud.google.com/application/web3/faucet/ethereum/sepolia
+
+Once you have ~0.01 ETH, run:
+```bash
+source .env
+forge script script/Deploy.s.sol:DeployIsing --rpc-url $SEPOLIA_RPC_URL --broadcast
+```
