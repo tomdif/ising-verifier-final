@@ -1,0 +1,20 @@
+[Unit]
+Description=Ising Prover Client
+After=network.target
+
+[Service]
+Type=simple
+User=prover
+WorkingDirectory=/opt/ising-prover
+Environment="PROVER_PRIVATE_KEY=0xYOUR_KEY"
+Environment="SEPOLIA_RPC_URL=https://rpc.sepolia.org"
+Environment="JOB_MANAGER_ADDRESS=0xCONTRACT"
+ExecStart=/opt/ising-prover/ising-prover-client \
+  --orchestrator https://orchestrator.example.com \
+  --gpu "NVIDIA A100" \
+  --max-spins 10000000
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
