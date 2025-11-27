@@ -11,7 +11,6 @@ use nova_snark::traits::circuit::StepCircuit;
 use bellpepper_core::{
     num::AllocatedNum,
     ConstraintSystem, SynthesisError,
-    boolean::Boolean,
 };
 use crate::{F1, poseidon_hash_2, poseidon_hash_4, BIAS};
 
@@ -337,7 +336,7 @@ impl<F: PrimeField> StepCircuit<F> for CollaborativeMiningCircuit<F> {
         let new_best = AllocatedNum::alloc(cs.namespace(|| "new_best"), || {
             match (best_energy.get_value(), new_energy.get_value()) {
                 (Some(b), Some(e)) => {
-                    if e < b { Ok(e) } else { Ok(b) }
+                    { let e_repr = e.to_repr(); let b_repr = b.to_repr(); if e_repr.as_ref() < b_repr.as_ref() { Ok(e) } else { Ok(b) } }
                 }
                 _ => Err(SynthesisError::AssignmentMissing),
             }
