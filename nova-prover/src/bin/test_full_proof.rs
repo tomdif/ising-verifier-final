@@ -53,7 +53,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Small problem for testing
     let n_spins = 64;
     let degree = 4;
-    let total_steps = 500u64;  // 5 folds of 100 steps each
+    let total_steps = 100_000u64;  // 5 folds of 100 steps each
 
     println!("  Configuration:");
     println!("    Spins: {}", n_spins);
