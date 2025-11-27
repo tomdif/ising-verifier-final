@@ -858,3 +858,4 @@ impl IsingNovaProver {
 pub mod comparators;
 pub mod l1_export;
 pub mod stark_export;
+pub mod collaborative;
