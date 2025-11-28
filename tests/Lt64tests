@@ -1,0 +1,260 @@
+// tests/lt64.rs
+//
+// Tests for the 64-bit less-than comparator (Lt64Chip).
+// Verifies correctness across the full 64-bit range, especially
+// for values around BIAS = 2^50 used in the Ising circuit.
+
+use halo2_proofs::{
+    circuit::{Layouter, SimpleFloorPlanner},
+    dev::MockProver,
+    plonk::{Circuit, ConstraintSystem, Error},
+};
+use pasta_curves::pallas::Base as F;
+
+use ising_verifier_final::chips::{Lt64Chip, Lt64Config};
+use ising_verifier_final::BIAS;
+
+const K: u32 = 12;
+
+#[derive(Clone)]
+struct Lt64TestCircuit {
+    lhs: u64,
+    rhs: u64,
+}
+
+impl Circuit<F> for Lt64TestCircuit {
+    type Config = Lt64Config;
+    type FloorPlanner = SimpleFloorPlanner;
+
+    fn without_witnesses(&self) -> Self {
+        Self { lhs: 0, rhs: 1 }
+    }
+
+    fn configure(meta: &mut ConstraintSystem<F>) -> Self::Config {
+        Lt64Chip::configure(meta)
+    }
+
+    fn synthesize(
+        &self,
+        config: Self::Config,
+        mut layouter: impl Layouter<F>,
+    ) -> Result<(), Error> {
+        layouter.assign_region(
+            || "lt64 test",
+            |mut region| {
+                let chip = Lt64Chip::construct(config.clone());
+                chip.assign_and_constrain(&mut region, 0, self.lhs, self.rhs)
+            },
+        )
+    }
+}
+
+fn run_lt64_test(lhs: u64, rhs: u64) {
+    let circuit = Lt64TestCircuit { lhs, rhs };
+    let prover = MockProver::run(K, &circuit, vec![]).unwrap();
+    prover.assert_satisfied();
+}
+
+// ============================================
+// Basic functionality tests
+// ============================================
+
+#[test]
+fn test_lt64_simple_small_values() {
+    run_lt64_test(0, 1);
+    run_lt64_test(1, 2);
+    run_lt64_test(100, 200);
+    run_lt64_test(0, 65535);
+}
+
+#[test]
+fn test_lt64_adjacent_values() {
+    run_lt64_test(0, 1);
+    run_lt64_test(65535, 65536);
+    run_lt64_test(1000000, 1000001);
+    run_lt64_test(12345678901234, 12345678901235);
+}
+
+// ============================================
+// BIAS-specific tests (critical for Ising circuit)
+// ============================================
+
+#[test]
+fn test_lt64_at_bias() {
+    run_lt64_test(BIAS - 1, BIAS);
+    run_lt64_test(BIAS, BIAS + 1);
+    run_lt64_test(BIAS - 1000, BIAS + 1000);
+}
+
+#[test]
+fn test_lt64_below_bias() {
+    run_lt64_test(BIAS - 10000, BIAS - 5000);
+    run_lt64_test(BIAS - 1000000, BIAS - 1);
+}
+
+#[test]
+fn test_lt64_above_bias() {
+    run_lt64_test(BIAS + 1, BIAS + 1000);
+    run_lt64_test(BIAS + 5000, BIAS + 10000);
+}
+
+#[test]
+fn test_lt64_real_ising_scenario() {
+    // Simulate actual gap-hiding check:
+    // E = -500, delta = 100, T = 0
+    // lhs = E + BIAS + delta = 2^50 - 400
+    // rhs = T + BIAS = 2^50
+    
+    let e: i64 = -500;
+    let delta: u64 = 100;
+    let t: i64 = 0;
+    
+    let lhs = ((e + BIAS as i64) as u64) + delta;
+    let rhs = (t + BIAS as i64) as u64;
+    
+    assert!(lhs < rhs, "Test setup error: lhs should be < rhs");
+    run_lt64_test(lhs, rhs);
+}
+
+#[test]
+fn test_lt64_extreme_negative_energy() {
+    let e: i64 = -(1i64 << 40);
+    let delta: u64 = 1000;
+    let t: i64 = 0;
+    
+    let lhs = ((e + BIAS as i64) as u64) + delta;
+    let rhs = (t + BIAS as i64) as u64;
+    
+    run_lt64_test(lhs, rhs);
+}
+
+#[test]
+fn test_lt64_tight_gap() {
+    let e: i64 = -100;
+    let delta: u64 = 99;
+    let t: i64 = 0;
+    
+    let lhs = ((e + BIAS as i64) as u64) + delta;
+    let rhs = (t + BIAS as i64) as u64;
+    
+    assert_eq!(lhs + 1, rhs, "Should have gap of exactly 1");
+    run_lt64_test(lhs, rhs);
+}
+
+// ============================================
+// Limb boundary tests
+// ============================================
+
+#[test]
+fn test_lt64_limb_boundaries() {
+    run_lt64_test(0xFFFF, 0x10000);
+    run_lt64_test(0xFFFF_FFFF, 0x1_0000_0000);
+    run_lt64_test(0xFFFF_FFFF_FFFF, 0x1_0000_0000_0000);
+}
+
+#[test]
+fn test_lt64_same_high_limbs_different_low() {
+    let base: u64 = 0x1234_5678_9ABC_0000;
+    run_lt64_test(base + 100, base + 200);
+}
+
+#[test]
+fn test_lt64_same_limb3_different_limb2() {
+    let base: u64 = 0x1234_0000_0000_0000;
+    run_lt64_test(base + 0x0001_0000_0000, base + 0x0002_0000_0000);
+}
+
+#[test]
+fn test_lt64_only_limb3_differs() {
+    run_lt64_test(0x0001_0000_0000_0000, 0x0002_0000_0000_0000);
+    run_lt64_test(0x1000_0000_0000_0000, 0x2000_0000_0000_0000);
+}
+
+// ============================================
+// Edge cases and extreme values
+// ============================================
+
+#[test]
+fn test_lt64_near_max() {
+    run_lt64_test(u64::MAX - 100, u64::MAX - 50);
+    run_lt64_test(u64::MAX - 1, u64::MAX);
+}
+
+#[test]
+fn test_lt64_zero_to_max() {
+    run_lt64_test(0, u64::MAX);
+}
+
+#[test]
+fn test_lt64_powers_of_two() {
+    for i in 0..63 {
+        let lhs = 1u64 << i;
+        let rhs = 1u64 << (i + 1);
+        run_lt64_test(lhs, rhs);
+    }
+}
+
+// ============================================
+// Failure tests (should panic)
+// ============================================
+
+#[test]
+#[should_panic(expected = "lhs >= rhs")]
+fn test_lt64_fails_when_equal() {
+    let circuit = Lt64TestCircuit { lhs: BIAS, rhs: BIAS };
+    let _ = MockProver::run(K, &circuit, vec![]);
+}
+
+#[test]
+#[should_panic(expected = "lhs >= rhs")]
+fn test_lt64_fails_when_greater() {
+    let circuit = Lt64TestCircuit { lhs: BIAS + 1, rhs: BIAS };
+    let _ = MockProver::run(K, &circuit, vec![]);
+}
+
+#[test]
+#[should_panic(expected = "lhs >= rhs")]
+fn test_lt64_fails_at_limb_boundary() {
+    let circuit = Lt64TestCircuit { 
+        lhs: 0x0001_0000_0000_0100, 
+        rhs: 0x0001_0000_0000_0000 
+    };
+    let _ = MockProver::run(K, &circuit, vec![]);
+}
+
+// ============================================
+// Randomized stress tests
+// ============================================
+
+#[test]
+fn test_lt64_fuzz() {
+    use rand::{Rng, SeedableRng};
+    let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+    
+    for _ in 0..100 {
+        let lhs: u64 = rng.gen();
+        let rhs: u64 = rng.gen();
+        
+        if lhs < rhs {
+            run_lt64_test(lhs, rhs);
+        }
+    }
+}
+
+#[test]
+fn test_lt64_fuzz_around_bias() {
+    use rand::{Rng, SeedableRng};
+    let mut rng = rand::rngs::StdRng::seed_from_u64(12345);
+    
+    for _ in 0..100 {
+        let offset_lhs: i64 = rng.gen_range(-(1i64 << 40)..(1i64 << 40));
+        let offset_rhs: i64 = rng.gen_range(-(1i64 << 40)..(1i64 << 40));
+        
+        let lhs = (BIAS as i64 + offset_lhs) as u64;
+        let rhs = (BIAS as i64 + offset_rhs) as u64;
+        
+        if lhs < rhs {
+            run_lt64_test(lhs, rhs);
+        }
+    }
+}

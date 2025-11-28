@@ -1,0 +1,16 @@
+[package]
+name = "nexus-tests"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "verification_test"
+path = "verification_test.rs"
+
+[[bin]]
+name = "wasm_test"
+path = "wasm_test.rs"
+
+[dependencies]
+sha2 = "0.10"
+hex = "0.4"
