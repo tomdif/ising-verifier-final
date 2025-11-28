@@ -1,0 +1,76 @@
+syntax = "proto3";
+package nexus.mining.v1;
+
+option go_package = "github.com/nexus-chain/nexus/x/mining/types";
+
+message DockingJob {
+  string id = 1;
+  string protein_id = 2;
+  string protein_pdbqt = 3;
+  int64 ligand_start = 4;
+  int64 ligand_end = 5;
+  string center_x = 6;
+  string center_y = 7;
+  string center_z = 8;
+  string size_x = 9;
+  string size_y = 10;
+  string size_z = 11;
+  int32 exhaustiveness = 12;
+  string status = 13;
+  int64 created_at = 14;
+}
+
+message LigandWork {
+  string job_id = 1;
+  int64 ligand_id = 2;
+  uint64 seed = 3;
+  int32 state = 4;
+  repeated Submission submissions = 5;
+}
+
+message Submission {
+  string miner = 1;
+  string result_hash = 2;
+  string pose_ipfs = 3;
+  string score = 4;
+  int32 bonds = 5;
+  int64 timestamp = 6;
+}
+
+message VerifiedResult {
+  string score = 1;
+  int32 bonds = 2;
+  string hash = 3;
+  string pose_ipfs = 4;
+  repeated string verifiers = 5;
+  int64 verified_at = 6;
+  uint64 period_id = 7;
+}
+
+message WorkAssignment {
+  string assignment_id = 1;
+  string miner = 2;
+  string job_id = 3;
+  int64 ligand_id = 4;
+  uint64 seed = 5;
+  int64 assigned_at = 6;
+  int64 last_heartbeat = 7;
+}
+
+message RewardPeriod {
+  uint64 id = 1;
+  int64 start_height = 2;
+  int64 end_height = 3;
+  string total_shares = 4;
+  string emission = 5;
+  bool distributed = 6;
+}
+
+message Params {
+  int64 blocks_per_period = 1;
+  string base_emission = 2;
+  uint64 halving_interval = 3;
+  int32 max_submissions = 4;
+  string hit_threshold = 5;
+  int64 heartbeat_grace_seconds = 6;
+}

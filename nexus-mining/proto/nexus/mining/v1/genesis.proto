@@ -1,0 +1,16 @@
+```
+syntax = "proto3";
+package nexus.mining.v1;
+
+option go_package = "github.com/nexus-chain/nexus/x/mining/types";
+
+import "nexus/mining/v1/types.proto";
+
+message GenesisState {
+  Params params = 1;
+  repeated DockingJob jobs = 2;
+  repeated LigandWork ligand_works = 3;
+  repeated WorkAssignment assignments = 4;
+  repeated RewardPeriod reward_periods = 5;
+  uint64 current_period_id = 6;
+}

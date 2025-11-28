@@ -1,0 +1,10 @@
+version: v1
+plugins:
+  - plugin: gocosmos
+    out: ..
+    opt:
+      - plugins=grpc
+  - plugin: grpc-gateway
+    out: ..
+    opt:
+      - logtostderr=true

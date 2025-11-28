@@ -1,0 +1,78 @@
+syntax = "proto3";
+package nexus.mining.v1;
+
+option go_package = "github.com/nexus-chain/nexus/x/mining/types";
+
+import "nexus/mining/v1/types.proto";
+
+service Msg {
+  rpc RequestWork(MsgRequestWork) returns (MsgRequestWorkResponse);
+  rpc Heartbeat(MsgHeartbeat) returns (MsgHeartbeatResponse);
+  rpc SubmitResult(MsgSubmitResult) returns (MsgSubmitResultResponse);
+  rpc CreateJob(MsgCreateJob) returns (MsgCreateJobResponse);
+  rpc UpdateParams(MsgUpdateParams) returns (MsgUpdateParamsResponse);
+}
+
+message MsgRequestWork {
+  string miner = 1;
+}
+
+message MsgRequestWorkResponse {
+  string assignment_id = 1;
+  string job_id = 2;
+  int64 ligand_id = 3;
+  uint64 seed = 4;
+  int64 timeout_seconds = 5;
+}
+
+message MsgHeartbeat {
+  string miner = 1;
+  string assignment_id = 2;
+}
+
+message MsgHeartbeatResponse {
+  bool accepted = 1;
+}
+
+message MsgSubmitResult {
+  string miner = 1;
+  string job_id = 2;
+  int64 ligand_id = 3;
+  string result_hash = 4;
+  string pose_ipfs = 5;
+  string score = 6;
+  int32 bonds = 7;
+}
+
+message MsgSubmitResultResponse {
+  string status = 1;
+  string message = 2;
+  bool verified = 3;
+  string shares = 4;
+}
+
+message MsgCreateJob {
+  string creator = 1;
+  string protein_id = 2;
+  string protein_pdbqt = 3;
+  int64 ligand_start = 4;
+  int64 ligand_end = 5;
+  string center_x = 6;
+  string center_y = 7;
+  string center_z = 8;
+  string size_x = 9;
+  string size_y = 10;
+  string size_z = 11;
+  int32 exhaustiveness = 12;
+}
+
+message MsgCreateJobResponse {
+  string job_id = 1;
+}
+
+message MsgUpdateParams {
+  string authority = 1;
+  Params params = 2;
+}
+
+message MsgUpdateParamsResponse {}

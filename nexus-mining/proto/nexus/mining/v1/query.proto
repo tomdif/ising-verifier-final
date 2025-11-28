@@ -1,0 +1,72 @@
+syntax = "proto3";
+package nexus.mining.v1;
+
+option go_package = "github.com/nexus-chain/nexus/x/mining/types";
+
+import "nexus/mining/v1/types.proto";
+
+service Query {
+  rpc Params(QueryParamsRequest) returns (QueryParamsResponse);
+  rpc Job(QueryJobRequest) returns (QueryJobResponse);
+  rpc Jobs(QueryJobsRequest) returns (QueryJobsResponse);
+  rpc JobStats(QueryJobStatsRequest) returns (QueryJobStatsResponse);
+  rpc MinerStats(QueryMinerStatsRequest) returns (QueryMinerStatsResponse);
+  rpc CurrentPeriod(QueryCurrentPeriodRequest) returns (QueryCurrentPeriodResponse);
+  rpc Hits(QueryHitsRequest) returns (QueryHitsResponse);
+}
+
+message QueryParamsRequest {}
+message QueryParamsResponse {
+  Params params = 1;
+}
+
+message QueryJobRequest {
+  string job_id = 1;
+}
+message QueryJobResponse {
+  DockingJob job = 1;
+}
+
+message QueryJobsRequest {
+  string status = 1;
+}
+message QueryJobsResponse {
+  repeated DockingJob jobs = 1;
+}
+
+message QueryJobStatsRequest {
+  string job_id = 1;
+}
+message QueryJobStatsResponse {
+  string job_id = 1;
+  int64 total_ligands = 2;
+  int64 fresh = 3;
+  int64 pending = 4;
+  int64 verified = 5;
+  int64 disputed = 6;
+  int64 hits = 7;
+}
+
+message QueryMinerStatsRequest {
+  string miner = 1;
+}
+message QueryMinerStatsResponse {
+  string miner = 1;
+  uint64 period_id = 2;
+  string shares = 3;
+  string total_shares = 4;
+  string estimated_reward = 5;
+}
+
+message QueryCurrentPeriodRequest {}
+message QueryCurrentPeriodResponse {
+  RewardPeriod period = 1;
+}
+
+message QueryHitsRequest {
+  string job_id = 1;
+  string threshold = 2;
+}
+message QueryHitsResponse {
+  repeated VerifiedResult hits = 1;
+}
