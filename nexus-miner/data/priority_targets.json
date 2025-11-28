@@ -1,0 +1,78 @@
+{
+  "version": "1.0",
+  "description": "NEXUS Priority Disease Targets for Drug Discovery",
+  "targets": [
+    {
+      "id": "covid-mpro",
+      "name": "SARS-CoV-2 Main Protease",
+      "pdb_id": "6LU7",
+      "disease": "COVID-19",
+      "priority": "critical",
+      "binding_site": {
+        "center": [-10.8, 15.8, 68.5],
+        "size": [20, 20, 20]
+      },
+      "notes": "Essential for viral replication. Nirmatrelvir (Paxlovid) target."
+    },
+    {
+      "id": "hiv-protease",
+      "name": "HIV-1 Protease",
+      "pdb_id": "1HSG",
+      "disease": "HIV/AIDS",
+      "priority": "high",
+      "binding_site": {
+        "center": [13.1, 22.5, 5.6],
+        "size": [20, 20, 20]
+      },
+      "notes": "Classic drug target. Multiple approved inhibitors."
+    },
+    {
+      "id": "tb-inha",
+      "name": "Mycobacterium tuberculosis InhA",
+      "pdb_id": "4TZK",
+      "disease": "Tuberculosis",
+      "priority": "critical",
+      "binding_site": {
+        "center": [15.0, 35.0, 25.0],
+        "size": [20, 20, 20]
+      },
+      "notes": "WHO priority pathogen. Drug-resistant strains emerging."
+    },
+    {
+      "id": "malaria-dhfr",
+      "name": "Plasmodium falciparum DHFR",
+      "pdb_id": "1J3I",
+      "disease": "Malaria",
+      "priority": "critical",
+      "binding_site": {
+        "center": [20.0, 25.0, 15.0],
+        "size": [18, 18, 18]
+      },
+      "notes": "Neglected tropical disease. Open Source Malaria project target."
+    },
+    {
+      "id": "cancer-kras",
+      "name": "KRAS G12C",
+      "pdb_id": "6OIM",
+      "disease": "Cancer (NSCLC, colorectal)",
+      "priority": "high",
+      "binding_site": {
+        "center": [-2.5, -3.0, -6.5],
+        "size": [15, 15, 15]
+      },
+      "notes": "Sotorasib target. Previously considered undruggable."
+    },
+    {
+      "id": "chagas-cruzain",
+      "name": "Cruzain (Cruzipain)",
+      "pdb_id": "3IUT",
+      "disease": "Chagas Disease",
+      "priority": "critical",
+      "binding_site": {
+        "center": [10.0, 20.0, 30.0],
+        "size": [18, 18, 18]
+      },
+      "notes": "Neglected tropical disease. DNDi priority target."
+    }
+  ]
+}

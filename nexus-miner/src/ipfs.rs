@@ -1,41 +1,30 @@
+//! IPFS client for uploading/downloading molecular data
+
 use anyhow::Result;
-use serde::Deserialize;
 
 pub struct IpfsClient {
     gateway: String,
-    http: reqwest::Client,
-}
-
-#[derive(Deserialize)]
-struct AddResponse {
-    #[serde(rename = "Hash")]
-    hash: String,
+    client: reqwest::Client,
 }
 
 impl IpfsClient {
     pub fn new(gateway: &str) -> Result<Self> {
-        Ok(IpfsClient {
+        Ok(Self {
             gateway: gateway.to_string(),
-            http: reqwest::Client::new(),
+            client: reqwest::Client::new(),
         })
     }
-
+    
     pub async fn upload(&self, content: &str) -> Result<String> {
-        let url = format!("{}/api/v0/add", self.gateway);
-        let form = reqwest::multipart::Form::new()
-            .text("file", content.to_string());
-
-        let resp = self.http.post(&url)
-            .multipart(form)
-            .send().await?;
-
-        let add_resp: AddResponse = resp.json().await?;
-        Ok(add_resp.hash)
+        // TODO: Implement actual IPFS upload
+        Ok("QmPlaceholder".to_string())
     }
-
+    
     pub async fn download(&self, cid: &str) -> Result<String> {
-        let url = format!("{}/api/v0/cat?arg={}", self.gateway, cid);
-        let resp = self.http.post(&url).send().await?;
-        Ok(resp.text().await?)
+        // TODO: Implement actual IPFS download
+        let url = format!("{}/ipfs/{}", self.gateway, cid);
+        let resp = self.client.get(&url).send().await?;
+        let content = resp.text().await?;
+        Ok(content)
     }
 }

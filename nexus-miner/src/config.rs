@@ -1,3 +1,5 @@
+//! Configuration for NEXUS miner
+
 use anyhow::Result;
 use serde::Deserialize;
 use std::fs;
@@ -5,32 +7,33 @@ use std::fs;
 #[derive(Debug, Deserialize)]
 pub struct Config {
     pub chain: ChainConfig,
-    pub miner: MinerConfig,
-    pub wasm: WasmConfig,
     pub ipfs: IpfsConfig,
+    pub vina: VinaConfig,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct ChainConfig {
-    pub node: String,
-    pub chain_id: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct MinerConfig {
-    pub key_file: String,
-    pub heartbeat_interval: u64,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct WasmConfig {
-    pub vina_path: String,
-    pub expected_hash: String,
+    pub rpc_url: String,
+    pub miner_address: String,
+    pub private_key: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct IpfsConfig {
     pub gateway: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct VinaConfig {
+    pub path: String,
+    pub expected_hash: String,
+    pub exhaustiveness: u32,
+    pub center_x: f64,
+    pub center_y: f64,
+    pub center_z: f64,
+    pub size_x: f64,
+    pub size_y: f64,
+    pub size_z: f64,
 }
 
 impl Config {
