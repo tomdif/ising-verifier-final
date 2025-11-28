@@ -40,18 +40,47 @@ func ComputeResultHash(jobId string, ligandId int64, seed uint64, score string, 
 }
 
 func GetBondMultiplier(bonds int32) float64 {
-	if bonds < 0 {
-		bonds = 0
-	}
-	if bonds <= 8 {
-		multipliers := []float64{0.1, 0.447, 0.9, 1.442, 2.074, 2.796, 3.61, 4.518, 5.52}
-		return multipliers[bonds]
-	}
-	result := 5.52
-	for i := int32(9); i <= bonds; i++ {
-		result *= 1.5
-	}
-	return result
+    if bonds < 0 {
+        bonds = 0
+    }
+    if bonds > 30 {
+        bonds = 30
+    }
+    // Power law: (bonds + 1)^1.2 - precomputed for 0-30
+    multipliers := []float64{
+        1.00,   // 0
+        2.30,   // 1
+        3.76,   // 2
+        5.34,   // 3
+        7.01,   // 4
+        8.76,   // 5
+        10.56,  // 6
+        12.43,  // 7
+        14.35,  // 8
+        16.31,  // 9
+        18.32,  // 10
+        20.37,  // 11
+        22.45,  // 12
+        24.58,  // 13
+        26.73,  // 14
+        28.92,  // 15
+        31.14,  // 16
+        33.39,  // 17
+        35.67,  // 18
+        37.97,  // 19
+        40.30,  // 20
+        42.66,  // 21
+        45.04,  // 22
+        47.44,  // 23
+        49.87,  // 24
+        52.32,  // 25
+        54.79,  // 26
+        57.28,  // 27
+        59.79,  // 28
+        62.32,  // 29
+        64.88,  // 30
+    }
+    return multipliers[bonds]
 }
 
 func (k Keeper) GetEmissionForPeriod(periodId uint64, halvingInterval uint64, baseEmission uint64) uint64 {
