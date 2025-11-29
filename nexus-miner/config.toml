@@ -1,18 +1,11 @@
 [chain]
-rpc_url = "http://localhost:26657"
-miner_address = "nexus1placeholder"
+node_url = "http://localhost:26657"
+home_dir = "~/.nexusd"
 
-[ipfs]
-gateway = "https://ipfs.io"
+[mining]
+num_workers = 4
+data_dir = "./data"
 
 [vina]
-path = "./vina_1.2.5_linux_x86_64"
-expected_hash = "fa0126a28a9ea9162d1b161dfa92bc76e632416db28ca246278ea4b2dc6860cb"
+binary_path = "./vina_1.2.5_linux_x86_64"
 exhaustiveness = 8
-# HIV protease binding site (from our ligand center calculation)
-center_x = 13.1
-center_y = 22.5
-center_z = 5.6
-size_x = 20.0
-size_y = 20.0
-size_z = 20.0

@@ -1,201 +1,187 @@
-//! NEXUS Miner - Native Vina Edition
-//! 
-//! Mines NEXUS tokens by performing molecular docking computations
-//! using native AutoDock Vina 1.2.5 (deterministic).
-
-use anyhow::Result;
-use clap::{Parser, Subcommand};
-use tracing::{info, warn};
-
-mod client;
+mod chain;
 mod config;
-mod hasher;
-mod ipfs;
 mod worker;
+
+use clap::{Parser, Subcommand};
+use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(name = "nexus-miner")]
-#[command(about = "NEXUS molecular docking miner")]
+#[command(about = "NEXUS Network Miner - Proof of Useful Work")]
 struct Cli {
-    #[arg(short, long, default_value = "config.toml")]
-    config: String,
-
     #[command(subcommand)]
     command: Commands,
+
+    /// Path to config file
+    #[arg(short, long, default_value = "config.toml")]
+    config: PathBuf,
 }
 
 #[derive(Subcommand)]
 enum Commands {
     /// Start mining
-    Start,
-    /// Show miner status
-    Status,
-    /// Show earnings
-    Earnings,
-    /// Verify Vina binary
-    VerifyVina,
-    /// Test docking locally
+    Start {
+        /// Miner address
+        #[arg(long)]
+        address: String,
+    },
+
+    /// Register as a miner
+    Register {
+        /// Miner address
+        #[arg(long)]
+        address: String,
+    },
+
+    /// Check miner status
+    Status {
+        /// Miner address
+        #[arg(long)]
+        address: String,
+    },
+
+    /// Run a test docking job
     TestDock {
-        #[arg(long)]
-        receptor: String,
-        #[arg(long)]
+        /// Target protein PDB ID
+        #[arg(long, default_value = "6LU7")]
+        target: String,
+
+        /// Ligand SMILES
+        #[arg(long, default_value = "CCO")]
         ligand: String,
     },
+
+    /// Verify Vina installation
+    VerifyVina,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter("nexus_miner=info")
-        .init();
-
+fn main() {
     let cli = Cli::parse();
-    let config = config::Config::load(&cli.config)?;
+
+    // Load config
+    let config = config::load_config(&cli.config).unwrap_or_else(|e| {
+        eprintln!("Warning: Could not load config: {}", e);
+        config::Config::default()
+    });
+
+    let chain_client = chain::ChainClient::new(
+        &config.chain.node_url,
+        &config.chain.home_dir,
+    );
 
     match cli.command {
-        Commands::Start => {
-            info!("Starting NEXUS miner...");
-            run_miner(config).await?;
-        }
-        Commands::Status => {
-            let chain = client::ChainClient::new(&config.chain)?;
-            let stats = chain.get_miner_stats().await?;
-            println!("Period: {} | Shares: {}", stats.period_id, stats.shares);
-        }
-        Commands::Earnings => {
-            let chain = client::ChainClient::new(&config.chain)?;
-            let stats = chain.get_miner_stats().await?;
-            println!("Estimated: {} NEX", stats.estimated_reward);
-        }
-        Commands::VerifyVina => {
-            verify_vina(&config)?;
-        }
-        Commands::TestDock { receptor, ligand } => {
-            test_dock(&config, &receptor, &ligand)?;
-        }
-    }
-    Ok(())
-}
-
-fn verify_vina(config: &config::Config) -> Result<()> {
-    let hash = hasher::hash_file(&config.vina.path)?;
-    println!("Vina binary: {}", config.vina.path);
-    println!("SHA256: {}", hash);
-    
-    if hash == config.vina.expected_hash {
-        println!("✅ VERIFIED - matches expected hash");
-        Ok(())
-    } else {
-        println!("❌ MISMATCH");
-        println!("Expected: {}", config.vina.expected_hash);
-        anyhow::bail!("Vina binary hash mismatch")
-    }
-}
-
-fn test_dock(config: &config::Config, receptor: &str, ligand: &str) -> Result<()> {
-    println!("Testing local docking...");
-    
-    let dock_config = worker::DockingConfig {
-        vina_path: config.vina.path.clone(),
-        center: (config.vina.center_x, config.vina.center_y, config.vina.center_z),
-        size: (config.vina.size_x, config.vina.size_y, config.vina.size_z),
-        exhaustiveness: config.vina.exhaustiveness,
-        cpu: 1,
-    };
-    
-    let result = worker::execute_docking(
-        &dock_config,
-        receptor,
-        ligand,
-        "test-job",
-        "test-ligand",
-    )?;
-    
-    println!("✅ Docking complete!");
-    println!("  Affinity: {:.3} kcal/mol", result.affinity);
-    println!("  Seed: {}", result.seed);
-    println!("  Bonds: {}", result.num_bonds);
-    println!("  Hash: {}", result.result_hash);
-    
-    Ok(())
-}
-
-async fn run_miner(config: config::Config) -> Result<()> {
-    // Verify Vina binary
-    let vina_hash = hasher::hash_file(&config.vina.path)?;
-    if vina_hash != config.vina.expected_hash {
-        anyhow::bail!("Vina binary hash mismatch! Expected: {}", config.vina.expected_hash);
-    }
-    info!("Vina binary verified");
-
-    let chain = client::ChainClient::new(&config.chain)?;
-    let ipfs = ipfs::IpfsClient::new(&config.ipfs.gateway)?;
-    
-    let dock_config = worker::DockingConfig {
-        vina_path: config.vina.path.clone(),
-        center: (config.vina.center_x, config.vina.center_y, config.vina.center_z),
-        size: (config.vina.size_x, config.vina.size_y, config.vina.size_z),
-        exhaustiveness: config.vina.exhaustiveness,
-        cpu: 1, // Fixed for cross-machine determinism
-    };
-
-    info!("Requesting work from chain...");
-    
-    loop {
-        // Request work assignment
-        let assignment = match chain.request_work().await {
-            Ok(a) => a,
-            Err(e) => {
-                warn!("No work available: {}", e);
-                tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
-                continue;
+        Commands::Start { address } => {
+            println!("Starting NEXUS miner...");
+            println!("  Address: {}", address);
+            println!("  Node: {}", config.chain.node_url);
+            println!("");
+            
+            // Check miner is registered
+            match chain_client.get_miner_status(&address) {
+                Ok(status) => println!("{}", status),
+                Err(e) => {
+                    eprintln!("Error checking miner status: {}", e);
+                    eprintln!("Register first with: nexus-miner register --address {}", address);
+                    return;
+                }
             }
-        };
-        
-        info!("Got assignment: job={} ligand={}", 
-            assignment.job_id, assignment.ligand_id);
 
-        // Fetch full job data
-        let job = chain.get_job(&assignment.job_id).await?;
-        
-        // Download ligand from IPFS
-        let ligand_pdbqt = ipfs.download(&assignment.ligand_cid).await?;
-        
-        // Save to temp files
-        let receptor_path = format!("/tmp/receptor_{}.pdbqt", assignment.job_id);
-        let ligand_path = format!("/tmp/ligand_{}.pdbqt", assignment.ligand_id);
-        std::fs::write(&receptor_path, &job.receptor_pdbqt)?;
-        std::fs::write(&ligand_path, &ligand_pdbqt)?;
-        
-        // Run docking
-        let result = worker::execute_docking(
-            &dock_config,
-            &receptor_path,
-            &ligand_path,
-            &assignment.job_id,
-            &assignment.ligand_id,
-        )?;
-        
-        info!("Docking complete: affinity={:.3} hash={}", 
-            result.affinity, &result.result_hash[..16]);
-        
-        // Upload pose to IPFS
-        let pose_cid = ipfs.upload(&result.pose_pdbqt).await?;
-        
-        // Submit result to chain
-        chain.submit_result(
-            &assignment.job_id,
-            &assignment.ligand_id,
-            &result.result_hash,
-            &pose_cid,
-            result.affinity,
-            result.num_bonds,
-        ).await?;
-        
-        info!("Result submitted successfully");
-        
-        // Cleanup
-        let _ = std::fs::remove_file(&receptor_path);
-        let _ = std::fs::remove_file(&ligand_path);
+            println!("\nWaiting for checkpoints...");
+            println!("[Press Ctrl+C to stop]");
+            
+            // Main mining loop
+            loop {
+                match chain_client.get_pending_checkpoint() {
+                    Ok(Some(checkpoint)) => {
+                        println!("\nCheckpoint {} received!", checkpoint.height);
+                        println!("  Jobs: {}", checkpoint.docking_jobs.len());
+                        
+                        for job in &checkpoint.docking_jobs {
+                            println!("\nProcessing job: {}", job.job_id);
+                            
+                            // Run docking
+                            match worker::run_docking(&config, &job.target_id, &job.ligand_id, job.seed) {
+                                Ok(result) => {
+                                    println!("  Affinity: {} kcal/mol", result.affinity);
+                                    println!("  Result hash: {}", result.result_hash);
+                                    
+                                    // Submit approval
+                                    let approval = chain::MinerApproval {
+                                        miner_address: address.clone(),
+                                        checkpoint_hash: checkpoint.block_hash.clone(),
+                                        job_id: job.job_id.clone(),
+                                        affinity: result.affinity.clone(),
+                                        pose_hash: result.pose_hash.clone(),
+                                        admet_hash: result.admet_hash.clone(),
+                                        result_hash: result.result_hash.clone(),
+                                        signature: "sig_placeholder".to_string(),
+                                    };
+                                    
+                                    match chain_client.submit_approval(&approval) {
+                                        Ok(tx) => println!("  Submitted: {}", tx),
+                                        Err(e) => eprintln!("  Error submitting: {}", e),
+                                    }
+                                }
+                                Err(e) => eprintln!("  Docking error: {}", e),
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        // No pending checkpoint, wait
+                        std::thread::sleep(std::time::Duration::from_secs(3));
+                    }
+                    Err(e) => {
+                        eprintln!("Error fetching checkpoint: {}", e);
+                        std::thread::sleep(std::time::Duration::from_secs(5));
+                    }
+                }
+            }
+        }
+
+        Commands::Register { address } => {
+            println!("Registering miner: {}", address);
+            match chain_client.register_miner(&address) {
+                Ok(result) => println!("{}", result),
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+
+        Commands::Status { address } => {
+            match chain_client.get_miner_status(&address) {
+                Ok(status) => println!("{}", status),
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+
+        Commands::TestDock { target, ligand } => {
+            println!("Running test docking...");
+            println!("  Target: {}", target);
+            println!("  Ligand: {}", ligand);
+            
+            match worker::run_docking(&config, &target, &ligand, 12345) {
+                Ok(result) => {
+                    println!("\nResult:");
+                    println!("  Affinity: {} kcal/mol", result.affinity);
+                    println!("  Pose hash: {}", result.pose_hash);
+                    println!("  ADMET hash: {}", result.admet_hash);
+                    println!("  Result hash: {}", result.result_hash);
+                }
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+
+        Commands::VerifyVina => {
+            println!("Verifying Vina installation...");
+            match worker::verify_vina(&config) {
+                Ok(version) => {
+                    println!("✅ Vina found: {}", version);
+                    println!("✅ Ready to mine!");
+                }
+                Err(e) => {
+                    eprintln!("❌ Vina not found: {}", e);
+                    eprintln!("\nDownload from: https://github.com/ccsb-scripps/AutoDock-Vina/releases");
+                }
+            }
+        }
     }
 }
