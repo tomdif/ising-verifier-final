@@ -6,62 +6,80 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-
-	"github.com/cosmos/cosmos-sdk/codec"
-	storetypes "github.com/cosmos/cosmos-sdk/store/types"
-	sdk "github.com/cosmos/cosmos-sdk/types"
+	"sync"
+	"time"
 
 	"nexus-chain/x/dualapproval/types"
 )
 
-type Keeper struct {
-	cdc      codec.BinaryCodec
-	storeKey storetypes.StoreKey
+// Simple in-memory store for standalone mode
+type Store struct {
+	data map[string][]byte
+	mu   sync.RWMutex
 }
 
-func NewKeeper(cdc codec.BinaryCodec, storeKey storetypes.StoreKey) Keeper {
-	return Keeper{cdc: cdc, storeKey: storeKey}
+func NewStore() *Store {
+	return &Store{data: make(map[string][]byte)}
+}
+
+func (s *Store) Get(key []byte) []byte {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.data[string(key)]
+}
+
+func (s *Store) Set(key, value []byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.data[string(key)] = value
+}
+
+func (s *Store) Has(key []byte) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	_, ok := s.data[string(key)]
+	return ok
+}
+
+type Keeper struct {
+	store *Store
+}
+
+func NewKeeper() *Keeper {
+	return &Keeper{store: NewStore()}
 }
 
 // CreateCheckpoint initiates a new checkpoint
-func (k Keeper) CreateCheckpoint(ctx sdk.Context, height int64, blockHash, valSetHash string) (*types.Checkpoint, error) {
-	store := ctx.KVStore(k.storeKey)
+func (k *Keeper) CreateCheckpoint(height int64, blockHash, valSetHash string) (*types.Checkpoint, error) {
 	key := []byte(fmt.Sprintf("checkpoint:%d", height))
 
-	if store.Has(key) {
+	if k.store.Has(key) {
 		return nil, errors.New("checkpoint already exists")
 	}
 
-	jobs := k.GetPendingDockingJobs(ctx, 10)
+	jobs := k.GetPendingDockingJobs(10)
 
 	checkpoint := &types.Checkpoint{
 		Height:           height,
 		BlockHash:        blockHash,
 		ValidatorSetHash: valSetHash,
 		Status:           types.CheckpointPending,
-		CreatedAt:        ctx.BlockTime(),
+		CreatedAt:        time.Now(),
 		DockingJobs:      jobs,
 		MinerApprovals:   []types.MinerApproval{},
 	}
 
 	bz, _ := json.Marshal(checkpoint)
-	store.Set(key, bz)
-
-	ctx.EventManager().EmitEvent(sdk.NewEvent(
-		"checkpoint_created",
-		sdk.NewAttribute("height", fmt.Sprintf("%d", height)),
-		sdk.NewAttribute("jobs", fmt.Sprintf("%d", len(jobs))),
-	))
+	k.store.Set(key, bz)
 
 	return checkpoint, nil
 }
 
 // GetCheckpoint retrieves a checkpoint by height
-func (k Keeper) GetCheckpoint(ctx sdk.Context, height int64) (*types.Checkpoint, error) {
-	store := ctx.KVStore(k.storeKey)
+func (k *Keeper) GetCheckpoint(height int64) (*types.Checkpoint, error) {
 	key := []byte(fmt.Sprintf("checkpoint:%d", height))
 
-	bz := store.Get(key)
+	bz := k.store.Get(key)
 	if bz == nil {
 		return nil, errors.New("checkpoint not found")
 	}
@@ -72,8 +90,8 @@ func (k Keeper) GetCheckpoint(ctx sdk.Context, height int64) (*types.Checkpoint,
 }
 
 // SubmitMinerApproval processes a miner's checkpoint approval
-func (k Keeper) SubmitMinerApproval(ctx sdk.Context, approval types.MinerApproval) error {
-	miner, err := k.GetMiner(ctx, approval.MinerAddress)
+func (k *Keeper) SubmitMinerApproval(approval types.MinerApproval) error {
+	miner, err := k.GetMiner(approval.MinerAddress)
 	if err != nil {
 		return errors.New("miner not registered")
 	}
@@ -81,7 +99,7 @@ func (k Keeper) SubmitMinerApproval(ctx sdk.Context, approval types.MinerApprova
 		return errors.New("miner not eligible")
 	}
 
-	checkpoint, err := k.GetPendingCheckpoint(ctx)
+	checkpoint, err := k.GetPendingCheckpoint()
 	if err != nil {
 		return errors.New("no pending checkpoint")
 	}
@@ -93,7 +111,7 @@ func (k Keeper) SubmitMinerApproval(ctx sdk.Context, approval types.MinerApprova
 
 	// Verify docking result
 	if err := k.VerifyDockingResult(&approval.DockingResult, checkpoint); err != nil {
-		k.SlashMiner(ctx, approval.MinerAddress, "invalid_result")
+		k.SlashMiner(approval.MinerAddress, "invalid_result")
 		return err
 	}
 
@@ -109,26 +127,26 @@ func (k Keeper) SubmitMinerApproval(ctx sdk.Context, approval types.MinerApprova
 
 	// Update miner stats
 	miner.JobsCompleted++
-	miner.LastActiveAt = ctx.BlockTime()
+	miner.LastActiveAt = time.Now()
 	miner.Reputation += 10
 	if miner.Reputation > 1000 {
 		miner.Reputation = 1000
 	}
-	k.SetMiner(ctx, miner)
+	k.SetMiner(miner)
 
 	// Check finalization
-	totalMiners := k.GetActiveMinerCount(ctx)
+	totalMiners := k.GetActiveMinerCount()
 	if checkpoint.CanFinalize(totalMiners) {
-		k.FinalizeCheckpoint(ctx, checkpoint)
+		k.FinalizeCheckpoint(checkpoint)
 	} else {
-		k.SaveCheckpoint(ctx, checkpoint)
+		k.SaveCheckpoint(checkpoint)
 	}
 
 	return nil
 }
 
 // VerifyDockingResult checks docking result validity
-func (k Keeper) VerifyDockingResult(result *types.DockingResult, checkpoint *types.Checkpoint) error {
+func (k *Keeper) VerifyDockingResult(result *types.DockingResult, checkpoint *types.Checkpoint) error {
 	var found bool
 	for _, job := range checkpoint.DockingJobs {
 		if job.JobID == result.JobID {
@@ -157,51 +175,40 @@ func computeResultHash(result *types.DockingResult) string {
 }
 
 // FinalizeCheckpoint marks checkpoint as finalized
-func (k Keeper) FinalizeCheckpoint(ctx sdk.Context, checkpoint *types.Checkpoint) {
-	store := ctx.KVStore(k.storeKey)
-
-	now := ctx.BlockTime()
+func (k *Keeper) FinalizeCheckpoint(checkpoint *types.Checkpoint) {
+	now := time.Now()
 	checkpoint.Status = types.CheckpointFinalized
 	checkpoint.FinalizedAt = &now
 
-	k.SaveCheckpoint(ctx, checkpoint)
+	k.SaveCheckpoint(checkpoint)
 
 	// Update latest
 	latestKey := []byte("checkpoint:latest")
 	bz, _ := json.Marshal(checkpoint.Height)
-	store.Set(latestKey, bz)
-
-	ctx.EventManager().EmitEvent(sdk.NewEvent(
-		"checkpoint_finalized",
-		sdk.NewAttribute("height", fmt.Sprintf("%d", checkpoint.Height)),
-		sdk.NewAttribute("approvals", fmt.Sprintf("%d", len(checkpoint.MinerApprovals))),
-	))
+	k.store.Set(latestKey, bz)
 }
 
-func (k Keeper) SaveCheckpoint(ctx sdk.Context, checkpoint *types.Checkpoint) {
-	store := ctx.KVStore(k.storeKey)
+func (k *Keeper) SaveCheckpoint(checkpoint *types.Checkpoint) {
 	key := []byte(fmt.Sprintf("checkpoint:%d", checkpoint.Height))
 	bz, _ := json.Marshal(checkpoint)
-	store.Set(key, bz)
+	k.store.Set(key, bz)
 }
 
-func (k Keeper) GetPendingCheckpoint(ctx sdk.Context) (*types.Checkpoint, error) {
-	store := ctx.KVStore(k.storeKey)
-	bz := store.Get([]byte("checkpoint:pending"))
+func (k *Keeper) GetPendingCheckpoint() (*types.Checkpoint, error) {
+	bz := k.store.Get([]byte("checkpoint:pending"))
 	if bz == nil {
 		return nil, errors.New("no pending checkpoint")
 	}
 	var height int64
 	json.Unmarshal(bz, &height)
-	return k.GetCheckpoint(ctx, height)
+	return k.GetCheckpoint(height)
 }
 
 // RegisterMiner adds a new miner
-func (k Keeper) RegisterMiner(ctx sdk.Context, address, pubKey string) error {
-	store := ctx.KVStore(k.storeKey)
+func (k *Keeper) RegisterMiner(address, pubKey string) error {
 	key := []byte(fmt.Sprintf("miner:%s", address))
 
-	if store.Has(key) {
+	if k.store.Has(key) {
 		return errors.New("already registered")
 	}
 
@@ -209,20 +216,19 @@ func (k Keeper) RegisterMiner(ctx sdk.Context, address, pubKey string) error {
 		Address:      address,
 		PublicKey:    pubKey,
 		Reputation:   500,
-		RegisteredAt: ctx.BlockTime(),
-		LastActiveAt: ctx.BlockTime(),
+		RegisteredAt: time.Now(),
+		LastActiveAt: time.Now(),
 	}
 
 	bz, _ := json.Marshal(miner)
-	store.Set(key, bz)
-	k.incrementMinerCount(ctx)
+	k.store.Set(key, bz)
+	k.incrementMinerCount()
 
 	return nil
 }
 
-func (k Keeper) GetMiner(ctx sdk.Context, address string) (*types.Miner, error) {
-	store := ctx.KVStore(k.storeKey)
-	bz := store.Get([]byte(fmt.Sprintf("miner:%s", address)))
+func (k *Keeper) GetMiner(address string) (*types.Miner, error) {
+	bz := k.store.Get([]byte(fmt.Sprintf("miner:%s", address)))
 	if bz == nil {
 		return nil, errors.New("not found")
 	}
@@ -231,14 +237,13 @@ func (k Keeper) GetMiner(ctx sdk.Context, address string) (*types.Miner, error) 
 	return &miner, nil
 }
 
-func (k Keeper) SetMiner(ctx sdk.Context, miner *types.Miner) {
-	store := ctx.KVStore(k.storeKey)
+func (k *Keeper) SetMiner(miner *types.Miner) {
 	bz, _ := json.Marshal(miner)
-	store.Set([]byte(fmt.Sprintf("miner:%s", miner.Address)), bz)
+	k.store.Set([]byte(fmt.Sprintf("miner:%s", miner.Address)), bz)
 }
 
-func (k Keeper) SlashMiner(ctx sdk.Context, address, reason string) {
-	miner, err := k.GetMiner(ctx, address)
+func (k *Keeper) SlashMiner(address, reason string) {
+	miner, err := k.GetMiner(address)
 	if err != nil {
 		return
 	}
@@ -248,18 +253,11 @@ func (k Keeper) SlashMiner(ctx sdk.Context, address, reason string) {
 		miner.Reputation = 0
 		miner.Slashed = true
 	}
-	k.SetMiner(ctx, miner)
-
-	ctx.EventManager().EmitEvent(sdk.NewEvent(
-		"miner_slashed",
-		sdk.NewAttribute("address", address),
-		sdk.NewAttribute("reason", reason),
-	))
+	k.SetMiner(miner)
 }
 
-func (k Keeper) GetActiveMinerCount(ctx sdk.Context) int {
-	store := ctx.KVStore(k.storeKey)
-	bz := store.Get([]byte("miners:count"))
+func (k *Keeper) GetActiveMinerCount() int {
+	bz := k.store.Get([]byte("miners:count"))
 	if bz == nil {
 		return 0
 	}
@@ -268,41 +266,24 @@ func (k Keeper) GetActiveMinerCount(ctx sdk.Context) int {
 	return count
 }
 
-func (k Keeper) incrementMinerCount(ctx sdk.Context) {
-	store := ctx.KVStore(k.storeKey)
-	count := k.GetActiveMinerCount(ctx) + 1
+func (k *Keeper) incrementMinerCount() {
+	count := k.GetActiveMinerCount() + 1
 	bz, _ := json.Marshal(count)
-	store.Set([]byte("miners:count"), bz)
+	k.store.Set([]byte("miners:count"), bz)
 }
 
-func (k Keeper) GetPendingDockingJobs(ctx sdk.Context, limit int) []types.DockingJob {
-	store := ctx.KVStore(k.storeKey)
-	iterator := sdk.KVStorePrefixIterator(store, []byte("job:pending:"))
-	defer iterator.Close()
-
-	jobs := []types.DockingJob{}
-	for count := 0; iterator.Valid() && count < limit; iterator.Next() {
-		var job types.DockingJob
-		json.Unmarshal(iterator.Value(), &job)
-		jobs = append(jobs, job)
-		count++
-	}
-	return jobs
+func (k *Keeper) GetPendingDockingJobs(limit int) []types.DockingJob {
+	// In production, would iterate over job:pending: prefix
+	return []types.DockingJob{}
 }
 
 // EndBlocker called at end of every block
-func (k Keeper) EndBlocker(ctx sdk.Context) {
-	height := ctx.BlockHeight()
-
+func (k *Keeper) EndBlocker(height int64, blockHash, valSetHash string) {
 	if height%types.CheckpointInterval == 0 && height > 0 {
-		blockHash := fmt.Sprintf("%X", ctx.BlockHeader().LastBlockId.Hash)
-		valSetHash := fmt.Sprintf("%X", ctx.BlockHeader().ValidatorsHash)
-
-		checkpoint, err := k.CreateCheckpoint(ctx, height, blockHash, valSetHash)
+		checkpoint, err := k.CreateCheckpoint(height, blockHash, valSetHash)
 		if err == nil {
-			store := ctx.KVStore(k.storeKey)
 			bz, _ := json.Marshal(checkpoint.Height)
-			store.Set([]byte("checkpoint:pending"), bz)
+			k.store.Set([]byte("checkpoint:pending"), bz)
 		}
 	}
 }
